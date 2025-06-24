@@ -239,10 +239,46 @@ def main(config: _config.TrainConfig):
     )
     init_wandb(config, resuming=resuming, enabled=config.wandb_enabled)
 
+    # ------------------------------------------------------------------
+    # Optional: speed-up during training by bypassing MP4 decoding.
+    # If the dataset directory contains extracted PNG frames at
+    #   images/{cam_key}/episode_{episode_index}/frame_{frame_index}.png
+    # then we override LeRobotDataset._query_videos to load those PNGs
+    # directly instead of seeking through MP4 files.
+    # ------------------------------------------------------------------
+
+    import numpy as _np
+    from PIL import Image as _PIL
+
+    try:
+        import lerobot.common.datasets.lerobot_dataset as _ld
+
+        _orig_query_videos = _ld.LeRobotDataset._query_videos  # save original
+
+        def _png_query(self, query_ts, ep_idx):  # type: ignore[override]
+            fps = self.meta.fps
+            out = {}
+            for key, ts_list in query_ts.items():
+                imgs = []
+                for ts in ts_list:
+                    frame_idx = round(ts * fps)
+                    img_path = self._get_image_file_path(ep_idx, key, frame_idx)
+                    if not img_path.is_file():
+                        # Fallback: use original video decoding for this batch
+                        return _orig_query_videos(self, query_ts, ep_idx)
+                    arr = _np.asarray(_PIL.open(img_path).convert("RGB"), dtype=_np.float32) / 255.0
+                    arr = _np.moveaxis(arr, -1, 0)  # HWC -> CHW
+                    imgs.append(arr)
+                out[key] = imgs[0] if len(imgs) == 1 else _np.stack(imgs)
+            return out
+
+        _ld.LeRobotDataset._query_videos = _png_query  # type: ignore[attr-defined]
+    except ModuleNotFoundError:
+        pass
+
     data_loader = _data_loader.create_data_loader(
         config,
         sharding=data_sharding,
-        num_workers=config.num_workers,
         shuffle=True,
     )
     data_iter = iter(data_loader)

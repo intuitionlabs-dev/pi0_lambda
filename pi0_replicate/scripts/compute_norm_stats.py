@@ -80,7 +80,7 @@ def main(config_name: str, max_frames: int | None = None):
     shuffle = False
     
     # import ipdb; ipdb.set_trace()
-    
+
     if max_frames is not None and max_frames < num_frames:
         num_frames = max_frames
         shuffle = True

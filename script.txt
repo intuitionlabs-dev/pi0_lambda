@@ -21,10 +21,10 @@ huggingface-cli download --repo-type dataset intuitioncore/piper_pick_and_place 
 
 
 cd ~/pi0_test/pi0_lambda/pi0_replicate
-export LEROBOT_VIDEO_BACKEND=image
+
 python -m scripts.compute_norm_stats --config-name pi0_single_piper_lora
-export LEROBOT_VIDEO_BACKEND=pil
-python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place_1 --resume --hf_repo_id intuitioncore/piper_pick_and_place_test
+
+python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place --hf_repo_id intuitioncore/piper_pick_and_place_test --resume
 
 
 sudo apt-get update
