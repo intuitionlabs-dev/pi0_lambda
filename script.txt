@@ -9,15 +9,18 @@ GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 mkdir data
 cd data
 
-source /home/cs/pi0/pi0_replicate/.venv/bin/activate
+source /home/intuition/pi0_test/pi0_lambda/pi0_replicate/.venv/bin/activate
 
 pip install -U "huggingface_hub[cli]"
 pip install -U "huggingface_hub[hf_transfer]"   
 export HF_HUB_ENABLE_HF_TRANSFER=1
+pip install hf_transfer
 
 mkdir piper_pick_and_place
-huggingface-cli download --repo-type dataset intuitioncore/piper_pick_and_place --local-dir /home/cs/pi0/pi0_replicate/data/piper_pick_and_place --local-dir-use-symlinks False
+huggingface-cli download --repo-type dataset intuitioncore/piper_pick_and_place --local-dir ./piper_pick_and_place --local-dir-use-symlinks False
 
+
+cd ~/pi0_test/pi0_lambda/pi0_replicate
 export LEROBOT_VIDEO_BACKEND=image
 python -m scripts.compute_norm_stats --config-name pi0_single_piper_lora
 export LEROBOT_VIDEO_BACKEND=pil

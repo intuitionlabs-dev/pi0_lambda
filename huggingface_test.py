@@ -3,7 +3,7 @@ from huggingface_hub import list_repo_files, hf_hub_download
 
 REPO_ID   = "intuitioncore/piper_pick_and_place"
 REPO_TYPE = "dataset"
-OUT_DIR   = Path("/home/cs/pi0/pi0_replicate/data/piper_pick_and_place")
+OUT_DIR   = Path("/home/intuition/pi0_test/pi0_lambda/pi0_replicate/data/piper_pick_and_place")
 
 # Helper: list and keep only files that start with a given prefix
 def first_n(prefix: str, n: int):

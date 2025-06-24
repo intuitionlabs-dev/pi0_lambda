@@ -431,3 +431,22 @@ def _assert_quantile_stats(norm_stats: at.PyTree[NormStats]) -> None:
             raise ValueError(
                 f"quantile stats must be provided if use_quantile_norm is True. Key {k} is missing q01 or q99."
             )
+
+
+# -----------------------------------------------------------------------------
+# Helper transforms
+# -----------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class RemoveStrings(DataTransformFn):
+    """Remove string leaves from a datapoint.
+
+    This is useful when computing statistics since strings are not supported by
+    JAX/NumPy numerical operations and are unnecessary for that purpose.
+    """
+
+    def __call__(self, data: DataDict) -> DataDict:  # type: ignore[override]
+        import numpy as _np
+
+        return {k: v for k, v in data.items() if not _np.issubdtype(_np.asarray(v).dtype, _np.str_)}
