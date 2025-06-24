@@ -255,6 +255,11 @@ def main(config: _config.TrainConfig):
 
         _orig_query_videos = _ld.LeRobotDataset._query_videos  # save original
 
+        # Fast path: if the user sets BYPASS_IMAGES=1 we will ignore all video
+        # decoding entirely and feed dummy zero images.  This guarantees no
+        # torch-vision video back-end is invoked and removes any I/O stall.
+        _BYPASS = bool(os.getenv("BYPASS_IMAGES", "0") == "1")
+
         def _png_query(self, query_ts, ep_idx):  # type: ignore[override]
             fps = self.meta.fps
             out = {}
@@ -264,17 +269,27 @@ def main(config: _config.TrainConfig):
                     frame_idx = round(ts * fps)
                     img_path = self._get_image_file_path(ep_idx, key, frame_idx)
                     if not img_path.is_file():
-                        # Fallback: use original video decoding for this batch
+                        if _BYPASS:
+                            # Return zeros in the expected shape, no decode
+                            shape = self.meta.shapes.get(key, (224, 224, 3))
+                            dummy = _np.zeros(shape, _np.float32)
+                            imgs.append(dummy)
+                            continue
+                        # Otherwise fallback to original video decoding
                         return _orig_query_videos(self, query_ts, ep_idx)
-                    arr = _np.asarray(_PIL.open(img_path).convert("RGB"), dtype=_np.float32) / 255.0
-                    arr = _np.moveaxis(arr, -1, 0)  # HWC -> CHW
+                    arr = _np.asarray(_PIL.open(img_path).convert("RGB"), dtype=_np.uint8)  # HWC
                     imgs.append(arr)
-                out[key] = imgs[0] if len(imgs) == 1 else _np.stack(imgs)
+                stack = imgs[0] if len(imgs) == 1 else _np.stack(imgs)
+                if stack.ndim == 3:
+                    stack = _np.expand_dims(stack, 0)
+                out[key] = stack
             return out
 
         _ld.LeRobotDataset._query_videos = _png_query  # type: ignore[attr-defined]
     except ModuleNotFoundError:
         pass
+    
+    # import ipdb; ipdb.set_trace()
 
     data_loader = _data_loader.create_data_loader(
         config,

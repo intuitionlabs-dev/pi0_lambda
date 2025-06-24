@@ -29,3 +29,24 @@ python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place
 
 sudo apt-get update
 sudo apt-get install -y ffmpeg libavcodec-dev libavformat-dev libavutil-dev
+
+
+export LEROBOT_DATA_ROOT=/home/intuition/pi0_test/pi0_lambda/pi0_replicate/data
+export BYPASS_IMAGES=1
+python -m scripts.train \
+       pi0_single_piper_lora \
+       --exp-name piper_single_pick_place \
+       --hf_repo_id intuitioncore/piper_pick_and_place_test \
+       --num-workers 0 \
+       --resume \
+       --batch-size 1
+
+
+cd ~/pi0_test
+export BYPASS_IMAGES=1
+python -m pi0_lambda.pi0_replicate.scripts.train \
+       pi0_single_piper_lora \
+       --exp-name piper_single_pick_place \
+       --hf_repo_id intuitioncore/piper_pick_and_place_test \
+       --num-workers 0 \
+       --resume
