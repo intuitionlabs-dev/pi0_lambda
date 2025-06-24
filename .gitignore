@@ -1,0 +1,51 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.so
+*.dylib
+
+# Virtual environment directories
+.venv/
+venv/
+.env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Python cache / static analysis
+.mypy_cache/
+.pytest_cache/
+.cache/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Log & coverage files
+*.log
+.coverage
+
+# Data (often large; keep out of repo)
+data/
+
+# Binary / media outputs
+*.mp4
+*.avi
+*.mov
+*.png
+*.jpg
+
+# UV/astral lock & cache files
+uv.lock
+.uv/ 

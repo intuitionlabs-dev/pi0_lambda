@@ -1,0 +1,26 @@
+git clone https://github.com/intuitionlabs-dev/pi0_replicate.git
+
+cd pi0_replicate
+sudo snap install astral-uv --classic
+GIT_LFS_SKIP_SMUDGE=1 uv sync
+GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
+
+mkdir data
+cd data
+
+source /home/cs/pi0/pi0_replicate/.venv/bin/activate
+
+pip install -U "huggingface_hub[cli]"
+pip install -U "huggingface_hub[hf_transfer]"   
+export HF_HUB_ENABLE_HF_TRANSFER=1
+
+huggingface-cli download --repo-type dataset intuitioncore/piper_pick_and_place --local-dir /home/cs/pi0/pi0_replicate/data/piper_pick_and_place --local-dir-use-symlinks False
+
+export LEROBOT_VIDEO_BACKEND=image
+python -m scripts.compute_norm_stats --config-name pi0_single_piper_lora
+export LEROBOT_VIDEO_BACKEND=pil
+python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place_1 --resume --hf_repo_id intuitioncore/piper_pick_and_place_test
+
+
+sudo apt-get update
+sudo apt-get install -y ffmpeg libavcodec-dev libavformat-dev libavutil-dev
