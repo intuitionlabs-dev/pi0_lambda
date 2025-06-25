@@ -34,6 +34,22 @@ def initialize_checkpoint_dir(
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    # ------------------------------------------------------------------
+    # Configure synchronous vs. asynchronous checkpointing.
+    # When OPENPI_SYNC_CHECKPOINT=1 we fully disable Orbax async writes. This
+    # guarantees that each call to `save_state` returns only after the
+    # checkpoint directory has been atomically renamed to <step>/.
+    # ------------------------------------------------------------------
+
+    _SYNC = os.getenv("OPENPI_SYNC_CHECKPOINT", "0") == "1"
+
+    # Clean up any stale temporary directories from interrupted async saves to
+    # avoid FileExistsError on the next save.
+    if _SYNC:
+        for tmp_dir in checkpoint_dir.glob("*.orbax-checkpoint-tmp-*"):
+            logging.warning("Removing stale tmp checkpoint directory %s", tmp_dir)
+            tmp_dir.rmtree()
+
     mngr = ocp.CheckpointManager(
         checkpoint_dir,
         item_handlers={
@@ -45,11 +61,8 @@ def initialize_checkpoint_dir(
             max_to_keep=1,
             keep_period=keep_period,
             create=False,
-            # Disable async checkpointing when OPENPI_SYNC_CHECKPOINT=1 – useful when
-            # immediate finalised checkpoints are required (no orbax tmp dirs).
-            async_options=None
-            if os.getenv("OPENPI_SYNC_CHECKPOINT", "0") == "1"
-            else ocp.AsyncOptions(timeout_secs=7200),
+            enable_async_checkpointing=not _SYNC,
+            async_options=None if _SYNC else ocp.AsyncOptions(timeout_secs=7200),
         ),
     )
 
