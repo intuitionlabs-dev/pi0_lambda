@@ -10,6 +10,8 @@ import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import torch
 import random
+import queue
+import threading
 try:
     import zarr  # type: ignore
 except ImportError:  # pragma: no cover
@@ -503,7 +505,7 @@ def create_torch_data_loader(
     skip_norm_stats: bool = False,
     shuffle: bool = False,
     num_batches: int | None = None,
-    num_workers: int = 0,
+    num_workers: int = -1,
     seed: int = 0,
 ) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
     """Create a data loader for training.
@@ -526,6 +528,19 @@ def create_torch_data_loader(
     dataset = create_torch_dataset(data_config, action_horizon, model_config)
     dataset = transform_dataset(dataset, data_config, skip_norm_stats=skip_norm_stats)
 
+    if num_workers < 0:
+        # E.g. ``num_workers=-1`` → use all logical CPUs; ``-2`` → n_cpus-1, etc.
+        num_workers = max(multiprocessing.cpu_count() + 1 + num_workers, 0)
+
+    if jax.process_count() > 1:
+        raise NotImplementedError("Data loading with multiple processes is not supported.")
+
+    mp_context = None
+    if num_workers > 0:
+        mp_context = multiprocessing.get_context("spawn")
+
+    generator = torch.Generator()
+    generator.manual_seed(seed)
     data_loader = TorchDataLoader(
         dataset,
         local_batch_size=batch_size // jax.process_count(),
@@ -586,7 +601,7 @@ class TorchDataLoader:
         sharding: jax.sharding.Sharding | None = None,
         shuffle: bool = False,
         num_batches: int | None = None,
-        num_workers: int = 0,
+        num_workers: int = -1,
         seed: int = 0,
     ):
         """Create a PyTorch data loader.
@@ -718,8 +733,19 @@ class RLDSDataLoader:
 
 
 class DataLoaderImpl(DataLoader):
-    def __init__(self, data_config: _config.DataConfig, data_loader: TorchDataLoader | RLDSDataLoader):
+    def __init__(
+        self,
+        data_config: _config.DataConfig,
+        data_loader: TorchDataLoader | RLDSDataLoader,
+        *,
+        prefetch_batches: int = 4,
+    ):
         self._data_config = data_config
+        if prefetch_batches > 0:
+            data_loader = typing.cast(
+                TorchDataLoader | RLDSDataLoader,
+                _PrefetchIterator(data_loader, prefetch_size=prefetch_batches),
+            )
         self._data_loader = data_loader
 
     def data_config(self) -> _config.DataConfig:
@@ -791,3 +817,43 @@ def create_zarr_dali_data_loader(
         num_batches=num_batches,
     )
     return DataLoaderImpl(data_config, data_loader)
+
+
+# -----------------------------------------------------------------------------
+# Utility: background prefetch iterator
+# -----------------------------------------------------------------------------
+
+class _PrefetchIterator:
+    """Wrap an iterator & asynchronously prefetch *N* entries in a background thread.
+
+    This is a generic utility that trades a small amount of host memory for
+    smoother host→device transfers and better pipeline overlap.
+    """
+
+    def __init__(self, iterable: typing.Iterable, *, prefetch_size: int = 2):
+        if prefetch_size <= 0:
+            raise ValueError("prefetch_size must be > 0")
+        self._iter = iter(iterable)
+        self._queue: queue.Queue = queue.Queue(maxsize=prefetch_size)
+        self._sentinel = object()
+
+        # Background worker
+        def _worker():
+            try:
+                for item in self._iter:
+                    self._queue.put(item)
+                self._queue.put(self._sentinel)
+            except Exception as exc:  # pragma: no cover – propagate to main thread
+                self._queue.put(exc)
+
+        self._thread = threading.Thread(target=_worker, daemon=True)
+        self._thread.start()
+
+    def __iter__(self):
+        while True:
+            item = self._queue.get()
+            if item is self._sentinel:
+                return
+            if isinstance(item, Exception):  # bubble up
+                raise item
+            yield item
