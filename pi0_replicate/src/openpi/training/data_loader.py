@@ -9,6 +9,18 @@ import jax.numpy as jnp
 import lerobot.common.datasets.lerobot_dataset as lerobot_dataset
 import numpy as np
 import torch
+import random
+try:
+    import zarr  # type: ignore
+except ImportError:  # pragma: no cover
+    zarr = None  # noqa: N816  # Allow upper-case alias to match import style
+
+try:
+    import nvidia.dali as dali  # type: ignore
+    from nvidia.dali.plugin.pytorch import DALIGenericIterator  # type: ignore
+except ImportError:  # pragma: no cover
+    dali = None  # type: ignore
+    DALIGenericIterator = None  # type: ignore
 
 import openpi.models.model as _model
 import openpi.training.config as _config
@@ -121,6 +133,178 @@ class FakeDataset(Dataset):
 
     def __len__(self) -> int:
         return self._num_samples
+
+
+class ZarrDataset(Dataset):
+    """Simple Zarr-backed random-access dataset.
+
+    The dataset expects a Zarr *group* that contains one or more N-dimensional
+    arrays with a common leading sample dimension.  Nested groups are traversed
+    recursively – arrays are flattened into a single dict using ``/``-separated
+    keys (e.g. ``"obs/images"``).
+
+    Notes
+    -----
+    • The dataset works entirely on NumPy ndarrays (no GPU memory pressure).
+    • You *must* provide an ``actions`` array – it will be used as the target.
+    """
+
+    def __init__(self, zarr_path: str):
+        if zarr is None:
+            raise ImportError(
+                "`zarr` is not installed.  Install it with `pip install zarr` to "
+                "use ZarrDataset."
+            )
+
+        self._root = zarr.open_group(zarr_path, mode="r")
+        self._arrays = self._collect_arrays(self._root)
+        if not self._arrays:
+            raise ValueError(f"No arrays found in Zarr group at '{zarr_path}'.")
+
+        # All arrays must share the leading dimension – use the smallest for safety
+        self._len = min(arr.shape[0] for arr in self._arrays.values())
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _collect_arrays(group: "zarr.Group", prefix: str = "") -> dict[str, "zarr.Array"]:
+        """Recursively gather all arrays inside *group* (depth-first)."""
+        arrays: dict[str, "zarr.Array"] = {}
+        for key, item in group.items():
+            if isinstance(item, zarr.Array):
+                arrays[prefix + key] = item
+            else:  # subgroup → recurse
+                arrays.update(ZarrDataset._collect_arrays(item, prefix + key + "/"))
+        return arrays
+
+    # ------------------------------------------------------------------
+    # Dataset API
+    # ------------------------------------------------------------------
+    def __getitem__(self, index: SupportsIndex) -> dict:
+        i = index.__index__()
+        if i >= self._len:
+            raise IndexError(i)
+        # Convert to NumPy eagerly – JAX can map later.
+        return {k: np.asarray(arr[i]) for k, arr in self._arrays.items()}
+
+    def __len__(self) -> int:  # noqa: D401  (simple function)
+        return self._len
+
+
+class ZarrDALILoader:
+    """High-performance batched loader that bridges ZarrDataset → JAX via NVIDIA DALI.
+
+    We rely on ``external_source`` to stream samples from Python into the
+    pipeline.  Even though this means the Python GIL remains a limiting factor,
+    we still benefit from GPU transfer overlap, built-in shuffling, and batched
+    collation performed by DALI.
+    """
+
+    def __init__(
+        self,
+        dataset: ZarrDataset,
+        local_batch_size: int,
+        *,
+        sharding: jax.sharding.Sharding | None = None,
+        shuffle: bool = False,
+        num_batches: int | None = None,
+        num_threads: int = 4,
+        device_id: int = 0,
+    ) -> None:
+        if dali is None or DALIGenericIterator is None:
+            raise ImportError(
+                "`nvidia-dali` is not installed.  Install it with the CUDA-specific "
+                "package, e.g. `pip install nvidia-dali-cuda12`."
+            )
+        if jax.process_count() > 1:
+            raise NotImplementedError("Multi-process data loading is not yet supported.")
+        if len(dataset) < local_batch_size:
+            raise ValueError(
+                f"Local batch size ({local_batch_size}) is larger than dataset size "
+                f"({len(dataset)})."
+            )
+
+        if sharding is None:
+            sharding = jax.sharding.NamedSharding(
+                jax.sharding.Mesh(jax.devices(), ("B",)), jax.sharding.PartitionSpec("B")
+            )
+        self._sharding = sharding
+        self._num_batches = num_batches
+
+        # Keep an explicit reference so that DALI's pipeline (running in a
+        # separate thread) can access the Python object.
+        self._dataset = dataset
+        self._keys = list(dataset._arrays.keys())
+
+        # ------------------------------------------------------------------
+        # DALI pipeline definition
+        # ------------------------------------------------------------------
+        class _ZarrPipeline(dali.pipeline.Pipeline):
+            def __init__(self, dataset: ZarrDataset, keys: list[str]):
+                super().__init__(
+                    batch_size=local_batch_size,
+                    num_threads=num_threads,
+                    device_id=device_id,
+                    seed=42,
+                )
+                self._dataset = dataset
+                self._keys = keys
+                self._shuffle = shuffle
+                self._order = list(range(len(dataset)))
+                if self._shuffle:
+                    random.shuffle(self._order)
+                self._pos = 0
+
+                def _sample(_):  # signature must accept sample_info (ignored)
+                    if self._pos >= len(self._order):
+                        self._pos = 0
+                        if self._shuffle:
+                            random.shuffle(self._order)
+                    idx = self._order[self._pos]
+                    self._pos += 1
+                    sample = self._dataset[idx]
+                    # External source expects a *sequence* when num_outputs > 1
+                    return [sample[k] for k in self._keys]
+
+                # Produce one output per key (all on the CPU).
+                self._outs = dali.fn.external_source(
+                    source=_sample,
+                    batch=False,
+                    num_outputs=len(self._keys),
+                    no_copy=True,
+                )
+
+            def define_graph(self):  # noqa: D401 (simple)
+                return self._outs
+
+        self._pipeline = _ZarrPipeline(dataset, self._keys)
+        self._pipeline.build()
+
+        self._iterator = DALIGenericIterator(
+            pipelines=[self._pipeline],
+            output_map=self._keys,
+            reader_name=None,
+            last_batch_policy=dali.plugin.base_iterator.LastBatchPolicy.DROP,
+            auto_reset=True,
+        )
+
+    # ------------------------------------------------------------------
+    # Python iterator interface
+    # ------------------------------------------------------------------
+    def __iter__(self):  # noqa: D401 (simple)
+        produced = 0
+        while True:
+            if self._num_batches is not None and produced >= self._num_batches:
+                return
+            try:
+                dali_batch = next(self._iterator)
+            except StopIteration:
+                return
+            # DALIGenericIterator returns a list with length == num pipelines.
+            batch_dict = {k: v[0].cpu().numpy() for k, v in dali_batch[0].items()}
+            produced += 1
+            yield jax.tree.map(lambda x: jax.make_array_from_process_local_data(self._sharding, x), batch_dict)
 
 
 def create_torch_dataset(
@@ -269,6 +453,32 @@ def create_data_loader(
             num_batches=num_batches,
             skip_norm_stats=skip_norm_stats,
         )
+
+    # ------------------------------------------------------------------
+    # Zarr+DALI fast-path – detect via `zarr_data_dir` attribute or `.zarr` suffix
+    # ------------------------------------------------------------------
+    zarr_dir: str | None = None
+    if hasattr(data_config, "zarr_data_dir"):
+        zarr_dir = typing.cast(str | None, getattr(data_config, "zarr_data_dir"))
+    # Fallback heuristic: repo_id or dataset_root directory ending with ".zarr"
+    if zarr_dir is None and data_config.repo_id and str(data_config.repo_id).endswith(".zarr"):
+        zarr_dir = typing.cast(str, data_config.repo_id)
+    if zarr_dir is None and data_config.dataset_root and str(data_config.dataset_root).endswith(".zarr"):
+        zarr_dir = typing.cast(str, data_config.dataset_root)
+
+    if zarr_dir is not None:
+        return create_zarr_dali_data_loader(
+            zarr_dir,
+            data_config,
+            batch_size=config.batch_size,
+            sharding=sharding,
+            shuffle=shuffle,
+            num_batches=num_batches,
+        )
+
+    # ------------------------------------------------------------------
+    # Default (PyTorch) loader
+    # ------------------------------------------------------------------
     return create_torch_data_loader(
         data_config,
         model_config=config.model,
@@ -550,3 +760,34 @@ def create_dataset(data_config: _config.DataConfig, model_config: _model.BaseMod
         action_horizon=model_config.action_horizon,
         model_config=model_config,
     )
+
+
+def create_zarr_dali_data_loader(
+    zarr_path: str,
+    data_config: _config.DataConfig,
+    *,
+    batch_size: int,
+    sharding: jax.sharding.Sharding | None = None,
+    shuffle: bool = False,
+    num_batches: int | None = None,
+) -> DataLoader[tuple[_model.Observation, _model.Actions]]:
+    """Factory that wires *ZarrDataset* + *ZarrDALILoader* together and wraps
+    everything in the standard ``DataLoaderImpl`` used throughout the codebase.
+    """
+
+    dataset: Dataset = ZarrDataset(zarr_path)
+    # Apply standard transforms (incl. normalization) – they operate on
+    # *individual* samples, hence we wrap before batching.
+    dataset = transform_dataset(dataset, data_config)
+
+    # Note: we divide global batch by process count to mirror behaviour of the
+    # existing TorchDataLoader.  Multi-process JAX not supported yet.
+    local_bs = batch_size // jax.process_count()
+    data_loader = ZarrDALILoader(
+        dataset=dataset,
+        local_batch_size=local_bs,
+        sharding=sharding,
+        shuffle=shuffle,
+        num_batches=num_batches,
+    )
+    return DataLoaderImpl(data_config, data_loader)
