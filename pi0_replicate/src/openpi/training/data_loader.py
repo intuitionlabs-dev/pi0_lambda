@@ -435,7 +435,6 @@ class TorchDataLoader:
 
     def __iter__(self):
         num_items = 0
-        # import ipdb; ipdb.set_trace()
         while True:
             data_iter = iter(self._data_loader)
             while True:
@@ -446,7 +445,6 @@ class TorchDataLoader:
                 except StopIteration:
                     break  # We've exhausted the dataset. Create a new iterator and start over.
                 num_items += 1
-                # import ipdb; ipdb.set_trace()
                 yield jax.tree.map(lambda x: jax.make_array_from_process_local_data(self._sharding, x), batch)
 
 

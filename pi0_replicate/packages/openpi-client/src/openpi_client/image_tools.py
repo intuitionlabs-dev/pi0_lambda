@@ -8,30 +8,71 @@ def convert_to_uint8(img: np.ndarray) -> np.ndarray:
     This is important for reducing the size of the image when sending it over the network.
     """
     if np.issubdtype(img.dtype, np.floating):
-        img = (255 * img).astype(np.uint8)
+        img = np.clip(255 * img, 0, 255).astype(np.uint8)
     return img
 
 
-def resize_with_pad(images: np.ndarray, height: int, width: int, method=Image.BILINEAR) -> np.ndarray:
-    """Replicates tf.image.resize_with_pad for multiple images using PIL. Resizes a batch of images to a target height.
+def _to_pil_uint8(arr: np.ndarray) -> tuple[Image.Image, tuple[float, float]]:
+    """Convert an HWC **or** CHW NumPy array to a PIL image.
 
-    Args:
-        images: A batch of images in [..., height, width, channel] format.
-        height: The target height of the image.
-        width: The target width of the image.
-        method: The interpolation method to use. Default is bilinear.
-
-    Returns:
-        The resized images in [..., height, width, channel].
+    Returns the image and `(scale, bias)` such that
+        restored = image_np.astype(float32) * scale + bias
+    will approximately reconstruct the original floating-point values.  For
+    integer inputs `(scale,bias) == (1.0, 0.0)`.
     """
-    # If the images are already the correct size, return them as is.
+
+    arr = np.asarray(arr)
+
+    # Move channel-first → channel-last if necessary.
+    if arr.ndim == 3 and arr.shape[0] <= 4 and arr.shape[-1] > 4:
+        arr = np.moveaxis(arr, 0, -1)
+
+    # Replicate single-channel → RGB so downstream callers always see 3-channel.
+    if arr.ndim == 3 and arr.shape[-1] == 1:
+        arr = np.repeat(arr, 3, axis=-1)
+
+    # Float → uint8 conversion for PIL.
+    if np.issubdtype(arr.dtype, np.floating):
+        # Heuristically map approximately [-1,1] or [0,1] to [0,255].  We fall
+        # back to simple clipping otherwise.
+        arr_min, arr_max = arr.min(), arr.max()
+        if arr_min >= -1.01 and arr_max <= 1.01:
+            arr_uint8 = ((arr + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
+            scale, bias = 1.0 / 127.5, -1.0
+        elif arr_min >= 0.0 and arr_max <= 1.01:
+            arr_uint8 = (arr * 255.0).clip(0, 255).astype(np.uint8)
+            scale, bias = 1.0 / 255.0, 0.0
+        else:
+            # Generic fallback: linear map [min,max] → [0,255]
+            scale_val = (arr_max - arr_min) if arr_max != arr_min else 1.0
+            arr_uint8 = ((arr - arr_min) / scale_val * 255.0).clip(0, 255).astype(np.uint8)
+            scale, bias = scale_val / 255.0, arr_min
+    else:
+        arr_uint8 = arr.astype(np.uint8) if arr.dtype != np.uint8 else arr
+        scale, bias = 1.0, 0.0
+
+    return Image.fromarray(arr_uint8), (scale, bias)
+
+
+def resize_with_pad(images: np.ndarray, height: int, width: int, method=Image.BILINEAR) -> np.ndarray:
+    """Resize a batch of images to `height×width` with zero-padding, supporting
+    both uint8 and float32 inputs and CHW/HWC layouts.
+    """
+
     if images.shape[-3:-1] == (height, width):
         return images
 
     original_shape = images.shape
+    flat_imgs = images.reshape(-1, *original_shape[-3:])
 
-    images = images.reshape(-1, *original_shape[-3:])
-    resized = np.stack([_resize_with_pad_pil(Image.fromarray(im), height, width, method=method) for im in images])
+    restored_imgs = []
+    for im in flat_imgs:
+        pil_img, (scale, bias) = _to_pil_uint8(im)
+        pil_resized = _resize_with_pad_pil(pil_img, height, width, method=method)
+        arr = np.asarray(pil_resized).astype(np.float32) * scale + bias
+        restored_imgs.append(arr)
+
+    resized = np.stack(restored_imgs)
     return resized.reshape(*original_shape[:-3], *resized.shape[-3:])
 
 

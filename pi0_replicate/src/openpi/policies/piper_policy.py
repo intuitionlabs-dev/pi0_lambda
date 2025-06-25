@@ -78,25 +78,40 @@ class PiperInputs(transforms.DataTransformFn):
             # No fallback for the right wrist – if it's absent we will pad with zeros below.
 
             # ----------------------------------------------------------------
-            # Convert to NumPy early. This ensures we avoid calling PyTorch's
-            # `transpose` when the decoded frames are `torch.Tensor`s (e.g. if
-            # the LeRobot dataset video decoder returns tensors in CHW
-            # format). Converting first lets `np.moveaxis` operate on a real
-            # ndarray and prevents the "transpose() received an invalid
-            # combination of arguments - got (list)" TypeError raised by
-            # PyTorch when given a Python list of axes.
+            # Ensure we work with NumPy arrays throughout the transform.  The
+            # LeRobot video decoders may yield `torch.Tensor`s which do *not*
+            # satisfy the `isinstance(v, np.ndarray)` check used later when we
+            # look for a reference image to pad missing views.  Converting the
+            # tensor to a NumPy array *and* writing the result back to
+            # `data[src_key]` guarantees that the reference lookup succeeds
+            # regardless of the backend that produced the frames.
             # ----------------------------------------------------------------
             if img is not None and not isinstance(img, np.ndarray):
                 img = np.asarray(img)
 
+            # Make the converted image visible to subsequent iterations /
+            # fallback logic.
+            if img is not None:
+                data[src_key] = img
+
             # ----------------------------------------------------------------
-            # If the video decoder returned channel-first (C,H,W) tensors or
-            # arrays, flip them to standard (H,W,C) so downstream PIL resize
-            # works. We check `ndim` after the possible conversion above.
+            # If the video decoder returned channel-first (C,H,W) arrays, convert
+            # them to channel-last (H,W,C).  We heuristically decide that the
+            # frame is channel-first when *both* of the following hold:
+            #   • the first dimension is tiny (≤4) – plausible channel count
+            #   • the last dimension is large (>4) – plausible spatial extent
+            # This avoids mistakenly transposing already channel-last RGB frames
+            # where height also happens to be ≤4 (e.g. 1×1 thumbnails).
             # ----------------------------------------------------------------
-            if img is not None and getattr(img, "ndim", 0) == 3 and img.shape[0] in (1, 3, 4):
-                # Assume channel-first; move to channel-last
-                img = np.moveaxis(img, 0, -1)
+            if img is not None and getattr(img, "ndim", 0) == 3:
+                c, h, w = img.shape[0], img.shape[1], img.shape[2]
+                if c <= 4 and img.shape[-1] > 4:
+                    img = np.moveaxis(img, 0, -1)
+
+                # Handle single-channel images returned as (H,W,1); replicate
+                # to RGB so that downstream PIL routines accept them.
+                if img.shape[-1] == 1:
+                    img = np.repeat(img, 3, axis=-1)
 
             if img is None:
                 # Fill missing view with black image matching the first available view
