@@ -2,6 +2,7 @@ import concurrent.futures as futures
 import dataclasses
 import logging
 from typing import Protocol
+import os
 
 from etils import epath
 import jax
@@ -44,7 +45,11 @@ def initialize_checkpoint_dir(
             max_to_keep=1,
             keep_period=keep_period,
             create=False,
-            async_options=ocp.AsyncOptions(timeout_secs=7200),
+            # Disable async checkpointing when OPENPI_SYNC_CHECKPOINT=1 – useful when
+            # immediate finalised checkpoints are required (no orbax tmp dirs).
+            async_options=None
+            if os.getenv("OPENPI_SYNC_CHECKPOINT", "0") == "1"
+            else ocp.AsyncOptions(timeout_secs=7200),
         ),
     )
 

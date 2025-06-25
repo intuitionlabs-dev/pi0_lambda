@@ -37,6 +37,7 @@ import jax.numpy as jnp
 import optax
 import tqdm_loggable.auto as tqdm
 import wandb
+import concurrent.futures as futures  # For background checkpoint uploads
 
 import openpi.models.model as _model
 import openpi.shared.array_typing as at
@@ -48,6 +49,8 @@ import openpi.training.optimizer as _optimizer
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
+
+_HF_EXECUTOR = futures.ThreadPoolExecutor(max_workers=1)
 
 
 def init_logging():
@@ -213,6 +216,24 @@ def train_step(
     return new_state, info
 
 
+def _async_upload(repo_id: str, ckpt_path: epath.Path, exp_name: str, step: int) -> None:
+    """Background task to upload a checkpoint directory to HuggingFace Hub."""
+    try:
+        from huggingface_hub import upload_folder  # Imported here to avoid global dependency at startup.
+
+        logging.info("Uploading checkpoint %s to HF repo %s (async)", ckpt_path, repo_id)
+        upload_folder(
+            repo_id=repo_id,
+            repo_type="model",
+            folder_path=str(ckpt_path),
+            path_in_repo=f"{exp_name}/{step}",
+            commit_message=f"Add checkpoint step {step}",
+            token=os.getenv("HF_TOKEN"),
+        )
+    except Exception:
+        logging.exception("Failed to upload checkpoint to HF")
+
+
 def main(config: _config.TrainConfig):
     init_logging()
     logging.info(f"Running on: {platform.node()}")
@@ -339,28 +360,27 @@ def main(config: _config.TrainConfig):
         if (step % config.save_interval == 0 and step > start_step) or step == config.num_train_steps - 1:
             _checkpoints.save_state(checkpoint_manager, train_state, data_loader, step)
 
-            # ------------------------------------------------------------------
-            # Optional: push checkpoint to HuggingFace Hub
-            # ------------------------------------------------------------------
-            if config.hf_repo_id is not None and jax.process_index() == 0:
-                try:
-                    from huggingface_hub import upload_folder
+            # Ensure Orbax finished writing so the directory has been renamed from
+            # *.orbax-checkpoint-tmp-* → <step>/ before we start uploading.
+            checkpoint_manager.wait_until_finished()
 
-                    ckpt_path = checkpoint_manager.directory / str(step)
-                    logging.info("Uploading checkpoint %s to HF repo %s", ckpt_path, config.hf_repo_id)
-                    upload_folder(
-                        repo_id=config.hf_repo_id,
-                        repo_type="model",
-                        folder_path=str(ckpt_path),
-                        path_in_repo=f"{config.exp_name}/{step}",
-                        commit_message=f"Add checkpoint step {step}",
-                        token=os.getenv("HF_TOKEN"),
-                    )
-                except Exception as e:
-                    logging.error("Failed to upload checkpoint: %s", e, exc_info=True)
+            # ------------------------------------------------------------------
+            # Push checkpoint to HuggingFace Hub in a background thread so that
+            # training does not block on network I/O.
+            # ------------------------------------------------------------------
+            if (
+                config.hf_repo_id is not None
+                and jax.process_index() == 0
+            ):
+                ckpt_path = checkpoint_manager.directory / str(step)
+                _HF_EXECUTOR.submit(_async_upload, config.hf_repo_id, ckpt_path, config.exp_name, step)
 
     logging.info("Waiting for checkpoint manager to finish")
     checkpoint_manager.wait_until_finished()
+
+    # Wait for any outstanding uploads before exiting.
+    logging.info("Waiting for HuggingFace uploads to finish")
+    _HF_EXECUTOR.shutdown(wait=True)
 
 
 if __name__ == "__main__":

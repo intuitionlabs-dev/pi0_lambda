@@ -28,6 +28,7 @@ except ModuleNotFoundError:
     os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 # -----------------------------------------------------------------------------
+# import ipdb; ipdb.set_trace()
 
 import numpy as np
 import tqdm
