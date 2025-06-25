@@ -2,7 +2,9 @@ git clone https://github.com/intuitionlabs-dev/pi0_replicate.git
 
 cd pi0_lambda
 cd pi0_replicate
-sudo snap install astral-uv --classic
+# sudo snap install astral-uv --classic
+pip install uv
+
 GIT_LFS_SKIP_SMUDGE=1 uv sync
 GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 
@@ -26,10 +28,15 @@ python -m scripts.compute_norm_stats --config-name pi0_single_piper_lora
 
 python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place --hf_repo_id intuitioncore/piper_pick_and_place_test --resume
 
+export OPENPI_SYNC_CHECKPOINT=1
+export HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXXXXXXX
+python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place --hf_repo_id intuitioncore/piper_pick_and_place_test --resume --save-interval 1000
 
 sudo apt-get update
 sudo apt-get install -y ffmpeg libavcodec-dev libavformat-dev libavutil-dev
 
+
+python -m ensurepip --upgrade
 
 export LEROBOT_DATA_ROOT=/home/intuition/pi0_test/pi0_lambda/pi0_replicate/data
 export BYPASS_IMAGES=1
