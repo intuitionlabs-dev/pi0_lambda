@@ -21,6 +21,16 @@ pip install hf_transfer
 mkdir piper_pick_and_place
 huggingface-cli download --repo-type dataset intuitioncore/piper_pick_and_place --local-dir ./piper_pick_and_place --local-dir-use-symlinks False
 
+pip install -U "huggingface_hub[cli]" "huggingface_hub[hf_transfer]" hf_transfer
+pip install -U "huggingface_hub[hf_transfer]" hf_transfer
+export HF_HUB_ENABLE_HF_TRANSFER=1
+export HF_TRANSFER_MAX_PARALLEL_DOWNLOADS=32
+huggingface-cli download \
+    intuitioncore/piper_pick_and_place \
+    --repo-type dataset \
+    --local-dir ./piper_pick_and_place \
+    --local-dir-use-symlinks False \
+    --max-workers 32
 
 cd ~/pi0_test/pi0_lambda/pi0_replicate
 
