@@ -26,9 +26,77 @@ import dataclasses
 from typing import ClassVar
 
 import numpy as np
+import functools
 
 from openpi import transforms
 
+
+# -----------------------------------------------------------------------------
+# Piper joint sign conventions
+#   Indices needing sign flip (per single arm):
+#     1 – elbow lift
+#     2 – shoulder forward/back
+#     3 – wrist roll/twist
+#   Gripper (6) is unchanged.
+# -----------------------------------------------------------------------------
+
+
+def _joint_flip_mask(action_dim: int) -> np.ndarray:
+    """Return a sign mask (+1 or -1) of length *action_dim*.
+
+    For single-arm (7-DoF) Piper recordings the mask is
+        [ 1, -1, -1, 1, 1, 1, 1 ]
+    and for dual-arm (14-DoF) we concatenate the mask twice.
+    """
+
+    single = np.array([1, -1, -1, 1, 1, 1, 1], dtype=np.float32)
+    if action_dim == 7:
+        return single
+    if action_dim == 14:
+        return np.concatenate([single, single], axis=0)
+    raise ValueError(f"Unsupported Piper action_dim {action_dim}; expected 7 or 14")
+
+
+# -----------------------------------------------------------------------------
+# Gripper conversion helpers (reuse constants from Aloha)
+# -----------------------------------------------------------------------------
+
+
+def _normalize(x, min_val, max_val):
+    return (x - min_val) / (max_val - min_val)
+
+
+def _unnormalize(x, min_val, max_val):
+    return x * (max_val - min_val) + min_val
+
+
+def _gripper_to_angular(value):
+    """Map linear gripper position (Aloha convention) to angular radians (π₀)."""
+    # These numbers are copied from Aloha policy – adjust if Piper differs.
+    value = _unnormalize(value, min_val=0.01844, max_val=0.05800)
+
+    def linear_to_radian(linear_position, arm_length, horn_radius):
+        val = (horn_radius ** 2 + linear_position ** 2 - arm_length ** 2) / (2 * horn_radius * linear_position)
+        return np.arcsin(np.clip(val, -1.0, 1.0))
+
+    value = linear_to_radian(value, arm_length=0.036, horn_radius=0.022)
+    return _normalize(value, min_val=0.4, max_val=1.5)
+
+
+def _gripper_from_angular(value):
+    """Inverse of _gripper_to_angular for outputs."""
+    value = _unnormalize(value, min_val=0.4, max_val=1.5)
+    return _normalize(value, min_val=-0.6213, max_val=1.4910)
+
+
+def _gripper_from_angular_inv(value):
+    value = _unnormalize(value, min_val=-0.6213, max_val=1.4910)
+    return _normalize(value, min_val=0.4, max_val=1.5)
+
+
+# ----------------------------------------------------------------------------
+# Input transform (dataset -> model)
+# ----------------------------------------------------------------------------
 
 @dataclasses.dataclass(frozen=True)
 class PiperInputs(transforms.DataTransformFn):
@@ -37,6 +105,9 @@ class PiperInputs(transforms.DataTransformFn):
     # Target action dimension of the model (π₀ default 32). The transform pads
     # state / action arrays with zeros if they are shorter than this number.
     action_dim: int
+
+    # Whether to flip joint signs to match π₀ internal convention.
+    adapt_to_pi: bool = True
 
     # Camera mapping from dataset → model input names
     CAM_MAP: ClassVar[dict[str, str]] = {
@@ -50,7 +121,19 @@ class PiperInputs(transforms.DataTransformFn):
         # ------------------------------------------------------------------
         # Proprioception
         # ------------------------------------------------------------------
-        state = np.asarray(data["state"], dtype=np.float32)
+        # print("using new piper_policy!!")
+        state = np.asarray(data["state"], dtype=np.float32).copy()
+
+        # Apply sign correction if requested
+        if self.adapt_to_pi:
+            mask = _joint_flip_mask(min(len(state), 14))
+            state[: len(mask)] = mask * state[: len(mask)]
+            # Gripper indices 6 and 13 (if present)
+            if len(state) >= 7:
+                state[6] = _gripper_to_angular(state[6])
+            if len(state) >= 14:
+                state[13] = _gripper_to_angular(state[13])
+
         state = transforms.pad_to_dim(state, self.action_dim)
 
         # ------------------------------------------------------------------
@@ -60,58 +143,28 @@ class PiperInputs(transforms.DataTransformFn):
         # ------------------------------------------------------------------
         images = {}
         image_masks = {}
-
-        # Loop over the expected destination → source key mapping. For the standard dual-arm
-        # dataset the mapping will resolve directly. For *single-arm* recordings we often only
-        # have a single wrist camera named ``wrist_image`` instead of separate left / right
-        # wrist topics. In that case we fall back to using ``wrist_image`` for the left wrist
-        # view and treat the (missing) right wrist view as padding.
-
         for dst_key, src_key in self.CAM_MAP.items():
             img = data.get(src_key)
-
-            # Fallback: if the left wrist image is missing but we have a generic "wrist_image"
-            # (common for single-arm Piper setups) use that instead.
-            if img is None and src_key == "left_wrist_image":
-                img = data.get("wrist_image")
-
-            # No fallback for the right wrist – if it's absent we will pad with zeros below.
-
             # ----------------------------------------------------------------
-            # Ensure we work with NumPy arrays throughout the transform.  The
-            # LeRobot video decoders may yield `torch.Tensor`s which do *not*
-            # satisfy the `isinstance(v, np.ndarray)` check used later when we
-            # look for a reference image to pad missing views.  Converting the
-            # tensor to a NumPy array *and* writing the result back to
-            # `data[src_key]` guarantees that the reference lookup succeeds
-            # regardless of the backend that produced the frames.
+            # Convert to NumPy early. This ensures we avoid calling PyTorch's
+            # `transpose` when the decoded frames are `torch.Tensor`s (e.g. if
+            # the LeRobot dataset video decoder returns tensors in CHW
+            # format). Converting first lets `np.moveaxis` operate on a real
+            # ndarray and prevents the "transpose() received an invalid
+            # combination of arguments - got (list)" TypeError raised by
+            # PyTorch when given a Python list of axes.
             # ----------------------------------------------------------------
             if img is not None and not isinstance(img, np.ndarray):
                 img = np.asarray(img)
 
-            # Make the converted image visible to subsequent iterations /
-            # fallback logic.
-            if img is not None:
-                data[src_key] = img
-
             # ----------------------------------------------------------------
-            # If the video decoder returned channel-first (C,H,W) arrays, convert
-            # them to channel-last (H,W,C).  We heuristically decide that the
-            # frame is channel-first when *both* of the following hold:
-            #   • the first dimension is tiny (≤4) – plausible channel count
-            #   • the last dimension is large (>4) – plausible spatial extent
-            # This avoids mistakenly transposing already channel-last RGB frames
-            # where height also happens to be ≤4 (e.g. 1×1 thumbnails).
+            # If the video decoder returned channel-first (C,H,W) tensors or
+            # arrays, flip them to standard (H,W,C) so downstream PIL resize
+            # works. We check `ndim` after the possible conversion above.
             # ----------------------------------------------------------------
-            if img is not None and getattr(img, "ndim", 0) == 3:
-                c, h, w = img.shape[0], img.shape[1], img.shape[2]
-                if c <= 4 and img.shape[-1] > 4:
-                    img = np.moveaxis(img, 0, -1)
-
-                # Handle single-channel images returned as (H,W,1); replicate
-                # to RGB so that downstream PIL routines accept them.
-                if img.shape[-1] == 1:
-                    img = np.repeat(img, 3, axis=-1)
+            if img is not None and getattr(img, "ndim", 0) == 3 and img.shape[0] in (1, 3, 4):
+                # Assume channel-first; move to channel-last
+                img = np.moveaxis(img, 0, -1)
 
             if img is None:
                 # Fill missing view with black image matching the first available view
@@ -137,7 +190,15 @@ class PiperInputs(transforms.DataTransformFn):
         # Actions (only during training)
         # ------------------------------------------------------------------
         if "actions" in data:
-            actions = np.asarray(data["actions"], dtype=np.float32)
+            actions = np.asarray(data["actions"], dtype=np.float32).copy()
+            if self.adapt_to_pi:
+                mask = _joint_flip_mask(min(actions.shape[-1], 14))
+                actions[..., : len(mask)] = actions[..., : len(mask)] * mask
+                # gripper columns
+                if actions.shape[-1] >= 7:
+                    actions[..., 6] = _gripper_from_angular_inv(actions[..., 6])
+                if actions.shape[-1] >= 14:
+                    actions[..., 13] = _gripper_from_angular_inv(actions[..., 13])
             actions = transforms.pad_to_dim(actions, self.action_dim, axis=-1)
             inputs["actions"] = actions
 
@@ -148,12 +209,26 @@ class PiperInputs(transforms.DataTransformFn):
         return inputs
 
 
+# ----------------------------------------------------------------------------
+# Output transform (model -> robot)
+# ----------------------------------------------------------------------------
+
 @dataclasses.dataclass(frozen=True)
 class PiperOutputs(transforms.DataTransformFn):
     """Reduce model output to Piper action dimensions."""
 
     action_dim: int = 14  # first 14 dims correspond to Piper joints
+    adapt_to_pi: bool = True  # convert back to firmware convention
 
     def __call__(self, data: dict) -> dict:
         actions = np.asarray(data["actions"])
-        return {"actions": actions[:, : self.action_dim]} 
+        acts = actions[:, : self.action_dim]
+        if self.adapt_to_pi:
+            mask = _joint_flip_mask(self.action_dim)
+            acts = acts * mask
+            # Convert gripper back
+            if self.action_dim >= 7:
+                acts[:, 6] = _gripper_from_angular(acts[:, 6])
+            if self.action_dim >= 14:
+                acts[:, 13] = _gripper_from_angular(acts[:, 13])
+        return {"actions": acts} 
