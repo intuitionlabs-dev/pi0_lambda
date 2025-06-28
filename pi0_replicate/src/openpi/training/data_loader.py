@@ -435,12 +435,14 @@ class TorchDataLoader:
 
     def __iter__(self):
         num_items = 0
+        # import ipdb; ipdb.set_trace()
         while True:
             data_iter = iter(self._data_loader)
             while True:
                 if self._num_batches is not None and num_items >= self._num_batches:
                     return
                 try:
+                    import ipdb; ipdb.set_trace()
                     batch = next(data_iter)
                 except StopIteration:
                     break  # We've exhausted the dataset. Create a new iterator and start over.

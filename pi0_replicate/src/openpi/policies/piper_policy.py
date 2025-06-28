@@ -141,8 +141,25 @@ class PiperInputs(transforms.DataTransformFn):
         # Convert to dict of expected keys + masks.
         # Images are already (H,W,3) uint8 from recorder.
         # ------------------------------------------------------------------
-        images = {}
-        image_masks = {}
+        images: dict[str, np.ndarray] = {}
+        image_masks: dict[str, np.bool_] = {}
+
+        # Try to locate at least one reference image in the incoming sample.
+        # If none is found (e.g. when BYPASS_IMAGES=1 and the dataset contains
+        # no pre-extracted PNG frames) we fall back to a dummy 224×224 black
+        # frame so that shapes stay consistent and later code never raises
+        # StopIteration.
+
+        ref_img = next(
+            (v for v in data.values() if isinstance(v, np.ndarray) and v.ndim == 3),
+            None,
+        )
+
+        if ref_img is None:
+            # Default to a square image that most models expect. 224×224 is the
+            # canonical input size further down the pipeline (ResizeImages).
+            ref_img = np.zeros((224, 224, 3), dtype=np.uint8)
+
         for dst_key, src_key in self.CAM_MAP.items():
             img = data.get(src_key)
             # ----------------------------------------------------------------
@@ -167,9 +184,8 @@ class PiperInputs(transforms.DataTransformFn):
                 img = np.moveaxis(img, 0, -1)
 
             if img is None:
-                # Fill missing view with black image matching the first available view
-                ref = next(v for v in data.values() if isinstance(v, np.ndarray) and v.ndim == 3)
-                img = np.zeros_like(ref)
+                # Fill missing view with black image matching the reference image
+                img = np.zeros_like(ref_img)
                 image_masks[dst_key] = np.False_
             else:
                 # Ensure uint8

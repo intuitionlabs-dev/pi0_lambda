@@ -69,4 +69,7 @@ python -m pi0_lambda.pi0_replicate.scripts.train \
        --resume
 
 apt-get update && apt-get install -y tmux
-python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place --hf_repo_id intuitioncore/piper_pick_and_place_test --resume --save-interval 1000 --num_train_steps 300000
+export BYPASS_IMAGES=1
+python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place_new --hf_repo_id intuitioncore/piper_pick_and_place_2 --resume --save-interval 1000 --num_train_steps 300000
+python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place_new --hf_repo_id intuitioncore/piper_pick_and_place_2 --resume --save-interval 1000 --num_train_steps 300000
+export BYPASS_IMAGES=1
