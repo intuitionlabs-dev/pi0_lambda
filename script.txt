@@ -35,6 +35,7 @@ huggingface-cli download \
 cd ~/pi0_test/pi0_lambda/pi0_replicate
 
 python -m scripts.compute_norm_stats --config-name pi0_single_piper_lora
+python -m scripts.compute_norm_stats --config-name pi0_single_piper_full
 
 python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place --hf_repo_id intuitioncore/piper_pick_and_place_test --resume
 
@@ -74,3 +75,11 @@ export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
 python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place_new --hf_repo_id intuitioncore/piper_pick_and_place_2 --resume --save-interval 1000 --num_train_steps 300000
 python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place_new --hf_repo_id intuitioncore/piper_pick_and_place_2 --resume --save-interval 1000 --num_train_steps 300000
 export BYPASS_IMAGES=1
+
+
+
+export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+export OPENPI_SYNC_CHECKPOINT=1
+export HF_TOKEN=hf_XXXXXXXXXXXXXXXXXXXXXXXXX
+python -m scripts.train pi0_single_piper_full --exp-name piper_single_pick_place_full_finetune --hf_repo_id intuitioncore/piper_pick_and_place_full_fine-tune_1 --resume --save-interval 1000 --num_train_steps 30000
+python -m scripts.train pi0_single_piper_full --exp-name piper_single_pick_place_full_finetune --hf_repo_id intuitioncore/piper_pick_and_place_full_fine-tune_1 --resume --save-interval 1000 --num_train_steps 30000 --batch_size 80

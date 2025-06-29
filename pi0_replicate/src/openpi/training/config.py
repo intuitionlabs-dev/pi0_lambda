@@ -774,6 +774,38 @@ _CONFIGS = [
         ).get_freeze_filter(),
         ema_decay=None,
     ),
+    TrainConfig(
+        name="pi0_piper_full",
+        # Full (non-LoRA) fine-tuning of π₀ on Piper dual-arm data.
+        model=pi0.Pi0Config(),
+        data=LeRobotPiperDataConfig(
+            # Placeholder repo_id – override on CLI if needed.
+            repo_id="towel_yellow_fold",
+            # Use task→prompt mapping from dataset by default.
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "s3://openpi-assets/checkpoints/pi0_base/params"
+        ),
+        num_train_steps=30_000,
+        # No freeze filter → full fine-tuning.
+    ),
+    #
+    # Piper single-arm (7-DoF) full fine-tuning config.
+    #
+    TrainConfig(
+        name="pi0_single_piper_full",
+        model=pi0.Pi0Config(),
+        data=LeRobotPiperDataConfig(
+            repo_id="piper_pick_and_place",  # TODO: replace with your dataset name / HF repo id
+            output_action_dim=7,
+            # Use prompt string from dataset by default.
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "s3://openpi-assets/checkpoints/pi0_base/params"
+        ),
+        num_train_steps=30_000,
+        # No freeze filter → full fine-tuning.
+    ),
 ]
 
 if len({config.name for config in _CONFIGS}) != len(_CONFIGS):
