@@ -306,12 +306,23 @@ def main(config: _config.TrainConfig):
             # called for each data-loading mode to clarify whether we are
             # pulling PNGs, black dummy frames, or falling back to MP4 decode.
             # A simple function attribute is used as a one-time flag.
-            def _log_once(msg, level=logging.INFO):
+            def _log_once(msg: str, level: str = "INFO") -> None:
+                """Print *msg* once per worker/process.
+
+                We avoid the standard logging module here because this helper
+                runs inside PyTorch DataLoader *worker* processes – their log
+                records are not automatically forwarded to the main process.
+                A direct `print(..., flush=True)` ensures the note appears in
+                the parent terminal/stdout regardless of worker isolation.  A
+                function attribute tracks messages we have already printed so
+                that each distinct line is emitted only once per process.
+                """
+
                 if not hasattr(_png_query, "_printed_messages"):
-                    _png_query._printed_messages = set()
-                if msg not in _png_query._printed_messages:
-                    logging.log(level, msg)
-                    _png_query._printed_messages.add(msg)
+                    _png_query._printed_messages = set()  # type: ignore[attr-defined]
+                if msg not in _png_query._printed_messages:  # type: ignore[attr-defined]
+                    print(f"[{level}] {msg}", flush=True)
+                    _png_query._printed_messages.add(msg)  # type: ignore[attr-defined]
 
             for key, ts_list in query_ts.items():
                 imgs = []
@@ -325,22 +336,21 @@ def main(config: _config.TrainConfig):
                             dummy = _np.zeros(shape, _np.float32)
                             imgs.append(dummy)
                             _log_once(
-                                "[DataLoader] PNG frame missing → returning dummy zeros "
-                                "because BYPASS_IMAGES=1. No videos will be read.",
-                                level=logging.WARNING,
+                                "PNG frame missing → returning dummy zeros because BYPASS_IMAGES=1. No videos will be read.",
+                                level="WARNING",
                             )
                             continue
                         # Otherwise fallback to original video decoding
                         _log_once(
-                            "[DataLoader] PNG frame missing → decoding MP4 video on-the-fly.",
-                            level=logging.INFO,
+                            "PNG frame missing → decoding MP4 video on-the-fly.",
+                            level="INFO",
                         )
                         return _orig_query_videos(self, query_ts, ep_idx)
                     arr = _np.asarray(_PIL.open(img_path).convert("RGB"), dtype=_np.uint8)  # HWC
                     imgs.append(arr)
                     _log_once(
-                        "[DataLoader] Decoding pre-extracted PNG image frames.",
-                        level=logging.INFO,
+                        "Decoding pre-extracted PNG image frames.",
+                        level="INFO",
                     )
                 stack = imgs[0] if len(imgs) == 1 else _np.stack(imgs)
                 if stack.ndim == 3:
