@@ -34,6 +34,7 @@ Filter: TypeAlias = nnx.filterlib.Filter
 
 
 @dataclasses.dataclass(frozen=True)
+
 class AssetsConfig:
     """Determines the location of assets (e.g., norm stats) that will be used to set up the data pipeline.
 

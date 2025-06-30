@@ -281,9 +281,38 @@ def main(config: _config.TrainConfig):
         # torch-vision video back-end is invoked and removes any I/O stall.
         _BYPASS = bool(os.getenv("BYPASS_IMAGES", "0") == "1")
 
+        # ------------------------------------------------------------------
+        # Notify the user which image-loading path will be taken. This prints
+        # only *once* at startup so that the log is not flooded during
+        # training.
+        # ------------------------------------------------------------------
+        if _BYPASS:
+            logging.info(
+                "BYPASS_IMAGES=1 → Will *not* decode MP4 videos. If extracted PNG "
+                "frames are found they will be loaded; otherwise the loader will "
+                "return black dummy frames (images masked out downstream)."
+            )
+        else:
+            logging.info(
+                "BYPASS_IMAGES=0 → Will load extracted PNG frames when present, "
+                "falling back to on-the-fly MP4 decoding if PNGs are absent."
+            )
+
         def _png_query(self, query_ts, ep_idx):  # type: ignore[override]
             fps = self.meta.fps
             out = {}
+
+            # We print an informative message the *first* time this helper is
+            # called for each data-loading mode to clarify whether we are
+            # pulling PNGs, black dummy frames, or falling back to MP4 decode.
+            # A simple function attribute is used as a one-time flag.
+            def _log_once(msg, level=logging.INFO):
+                if not hasattr(_png_query, "_printed_messages"):
+                    _png_query._printed_messages = set()
+                if msg not in _png_query._printed_messages:
+                    logging.log(level, msg)
+                    _png_query._printed_messages.add(msg)
+
             for key, ts_list in query_ts.items():
                 imgs = []
                 for ts in ts_list:
@@ -295,11 +324,24 @@ def main(config: _config.TrainConfig):
                             shape = self.meta.shapes.get(key, (224, 224, 3))
                             dummy = _np.zeros(shape, _np.float32)
                             imgs.append(dummy)
+                            _log_once(
+                                "[DataLoader] PNG frame missing → returning dummy zeros "
+                                "because BYPASS_IMAGES=1. No videos will be read.",
+                                level=logging.WARNING,
+                            )
                             continue
                         # Otherwise fallback to original video decoding
+                        _log_once(
+                            "[DataLoader] PNG frame missing → decoding MP4 video on-the-fly.",
+                            level=logging.INFO,
+                        )
                         return _orig_query_videos(self, query_ts, ep_idx)
                     arr = _np.asarray(_PIL.open(img_path).convert("RGB"), dtype=_np.uint8)  # HWC
                     imgs.append(arr)
+                    _log_once(
+                        "[DataLoader] Decoding pre-extracted PNG image frames.",
+                        level=logging.INFO,
+                    )
                 stack = imgs[0] if len(imgs) == 1 else _np.stack(imgs)
                 if stack.ndim == 3:
                     stack = _np.expand_dims(stack, 0)
