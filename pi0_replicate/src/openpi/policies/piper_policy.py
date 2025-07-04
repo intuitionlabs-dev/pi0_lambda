@@ -104,16 +104,17 @@ class PiperInputs(transforms.DataTransformFn):
 
 @dataclasses.dataclass(frozen=True)
 class PiperOutputs(transforms.DataTransformFn):
+    # New: allow overriding the number of real action dimensions to return. Defaults to 7 (single-arm).
+    action_dim: int = 7
+
     """
-    This class is used to convert outputs from the model back the the dataset specific format. It is
+    This class is used to convert outputs from the model back to the dataset-specific format. It is
     used for inference only.
 
-    For your own dataset, you can copy this class and modify the action dimension based on the comments below.
+    If your dataset has a different number of *real* action dimensions (before padding) set
+    `action_dim` accordingly when constructing the transform.
     """
 
     def __call__(self, data: dict) -> dict:
-        # Only return the first N actions -- since we padded actions above to fit the model action
-        # dimension, we need to now parse out the correct number of actions in the return dict.
-        # For Libero, we only return the first 7 actions (since the rest is padding).
-        # For your own dataset, replace `7` with the action dimension of your dataset.
-        return {"actions": np.asarray(data["actions"][:, :7])}
+        # Return only the first `action_dim` columns; the remainder were padding added upstream.
+        return {"actions": np.asarray(data["actions"][:, : self.action_dim])}
