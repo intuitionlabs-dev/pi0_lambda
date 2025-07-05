@@ -8,7 +8,7 @@ pip install uv
 GIT_LFS_SKIP_SMUDGE=1 uv sync
 GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
 
-mkdir data
+mkdir -p data
 cd data
 
 source /workspace/pi0_lambda/pi0_replicate/.venv/bin/activate
@@ -26,7 +26,7 @@ pip install -U "huggingface_hub[hf_transfer]" hf_transfer
 export HF_HUB_ENABLE_HF_TRANSFER=1
 export HF_TRANSFER_MAX_PARALLEL_DOWNLOADS=32
 huggingface-cli download \
-    intuitioncore/piper_pick_and_place \
+    intuitioncore/piper_pick_place_new_recorder \
     --repo-type dataset \
     --local-dir ./piper_pick_and_place \
     --local-dir-use-symlinks False \
