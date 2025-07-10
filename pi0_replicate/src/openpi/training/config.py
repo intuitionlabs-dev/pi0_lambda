@@ -21,6 +21,7 @@ import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
 import openpi.policies.piper_policy as piper_policy
+import openpi.policies.piper_policy_two_arms as piper_policy_two_arms
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.optimizer as _optimizer
@@ -420,6 +421,70 @@ class LeRobotAgileXDataConfig(DataConfigFactory):
         dataset_root = (pathlib.Path("./data") / repo_dirname).resolve()
 
         # We return all data transforms for training and inference. No need to change anything here.
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            dataset_root=str(dataset_root),
+        )
+
+
+# ------------------------------------------------------------
+# Dual-arm AgileX (Piper) dataset – 14-DoF
+# ------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotAgileXDoubleDataConfig(DataConfigFactory):
+    """Data config for dual-arm (14-DoF) Piper AgileX recordings."""
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Map raw LeRobot keys → flattened canonical keys expected by PiperInputs (dual-arm).
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        # camera images
+                        "observation/image": "workspace_image",
+                        "observation/left_wrist_image": "left_wrist_image",
+                        "observation/right_wrist_image": "right_wrist_image",
+                        # proprio & actions
+                        "observation/state": "state",
+                        "actions": "actions",
+                        # optional language prompt
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        # Data ↔ model transforms
+        data_transforms = _transforms.Group(
+            inputs=[
+                piper_policy_two_arms.PiperInputs(
+                    action_dim=model_config.action_dim,
+                    model_type=model_config.model_type,
+                )
+            ],
+            outputs=[piper_policy_two_arms.PiperOutputs()],
+        )
+
+        # Convert first 6 joint values of each arm to delta space, grippers absolute.
+        delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+        data_transforms = data_transforms.push(
+            inputs=[_transforms.DeltaActions(delta_action_mask)],
+            outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+        )
+
+        # Standard model-level transforms (tokenization etc.)
+        model_transforms = ModelTransformFactory()(model_config)
+
+        # Resolve dataset root (allows offline training)
+        repo_dirname = self.repo_id if self.repo_id is not tyro.MISSING else ""
+        dataset_root = (pathlib.Path("./data") / repo_dirname).resolve()
+
         return dataclasses.replace(
             self.create_base_config(assets_dirs),
             repack_transforms=repack_transform,
@@ -920,6 +985,26 @@ _CONFIGS = [
         # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
         # Check the base TrainConfig class for a full list of available hyperparameters.
         num_train_steps=30_000,
+    ),
+
+    # ------------------------------------------------------------
+    # Dual-arm Piper AgileX – Full fine-tuning
+    # ------------------------------------------------------------
+    TrainConfig(
+        name="pi0_double_agilex_full",
+        model=pi0.Pi0Config(),
+        data=LeRobotAgileXDoubleDataConfig(
+            repo_id="piper_pick_and_place_double",  # TODO: update to your dataset ID
+            base_config=DataConfig(
+                local_files_only=True,
+                prompt_from_task=True,
+            ),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "s3://openpi-assets/checkpoints/pi0_base/params"
+        ),
+        num_train_steps=30_000,
+        # Full fine-tuning (no freeze filter)
     ),
 ]
 
