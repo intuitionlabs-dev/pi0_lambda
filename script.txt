@@ -85,3 +85,9 @@ python -m scripts.train pi0_single_piper_full --exp-name piper_single_pick_place
 
 
 python -m scripts.train pi0_single_agilex_full --exp-name piper_single_pick_place_full_finetune --hf_repo_id intuitioncore/piper_pick_and_place_full_fine-tune_5_new_recorder --resume --save-interval 1000 --num_train_steps 30000 --batch_size 80
+
+
+python -m scripts.train pi0_double_agilex_full \
+    --exp-name piper_double_pick_place_full_finetune \
+    --hf_repo_id intuitioncore/piper_pick_and_place_full_fine-tune_5_new_recorder \
+    --resume --save-interval 1000 --num_train_steps 30000 --batch_size 80
