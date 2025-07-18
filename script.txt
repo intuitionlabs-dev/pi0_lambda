@@ -99,4 +99,4 @@ export HF_TOKEN=
 python -m scripts.train pi0_double_agilex_full \
     --exp-name piper_fold_the_towel_303 \
     --hf_repo_id intuitioncore/fold_the_towel_brand_new_1 \
-    --resume --save-interval 1000 --num_train_steps 30000 --batch_size 80
+    --resume --save-interval 1000 --num_train_steps 30000 --batch_size 64
