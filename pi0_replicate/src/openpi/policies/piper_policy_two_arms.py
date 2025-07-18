@@ -41,6 +41,7 @@ def _parse_image(image) -> np.ndarray:
     return image
 
 
+@dataclasses.dataclass(frozen=True)
 class PiperInputs(transforms.DataTransformFn):
     """Convert dual-arm Piper datapoint → π₀ model input."""
 
@@ -104,6 +105,7 @@ class PiperInputs(transforms.DataTransformFn):
         return inputs
 
 
+@dataclasses.dataclass(frozen=True)
 class PiperOutputs(transforms.DataTransformFn):
     """Truncate model action tensor to dual-arm dimensions (14)."""
 

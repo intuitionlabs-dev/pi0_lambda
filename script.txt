@@ -17,16 +17,16 @@ pip install -U "huggingface_hub[hf_transfer]"
 export HF_HUB_ENABLE_HF_TRANSFER=1
 pip install hf_transfer
 
-mkdir -p piper_pick_and_place
+mkdir -p piper_fold_the_towel
 
 pip install -U "huggingface_hub[cli]" "huggingface_hub[hf_transfer]" hf_transfer
 pip install -U "huggingface_hub[hf_transfer]" hf_transfer
 export HF_HUB_ENABLE_HF_TRANSFER=1
 export HF_TRANSFER_MAX_PARALLEL_DOWNLOADS=32
 huggingface-cli download \
-    intuitioncore/piper_pick_place_new_recorder \
+    intuitioncore/fold_the_towel_brand_new_1 \
     --repo-type dataset \
-    --local-dir ./piper_pick_and_place \
+    --local-dir ./piper_fold_the_towel \
     --local-dir-use-symlinks False \
     --max-workers 32
 
@@ -36,6 +36,9 @@ python -m scripts.compute_norm_stats --config-name pi0_single_piper_lora
 python -m scripts.compute_norm_stats --config-name pi0_single_piper_full
 
 python -m scripts.compute_norm_stats --config-name pi0_single_agilex_full
+
+python -m scripts.compute_norm_stats --config-name pi0_double_agilex_full
+
 
 python -m scripts.train pi0_single_piper_lora --exp-name piper_single_pick_place --hf_repo_id intuitioncore/piper_pick_and_place_test --resume
 
@@ -87,7 +90,13 @@ python -m scripts.train pi0_single_piper_full --exp-name piper_single_pick_place
 python -m scripts.train pi0_single_agilex_full --exp-name piper_single_pick_place_full_finetune --hf_repo_id intuitioncore/piper_pick_and_place_full_fine-tune_5_new_recorder --resume --save-interval 1000 --num_train_steps 30000 --batch_size 80
 
 
+export BYPASS_IMAGES=0
+export XLA_PYTHON_CLIENT_MEM_FRACTION=1.0
+export OPENPI_SYNC_CHECKPOINT=1
+export HF_TOKEN=
+
+
 python -m scripts.train pi0_double_agilex_full \
-    --exp-name piper_double_pick_place_full_finetune \
-    --hf_repo_id intuitioncore/piper_pick_and_place_full_fine-tune_5_new_recorder \
+    --exp-name piper_fold_the_towel_303 \
+    --hf_repo_id intuitioncore/fold_the_towel_brand_new_1 \
     --resume --save-interval 1000 --num_train_steps 30000 --batch_size 80
